@@ -42,14 +42,15 @@ export async function saveSettings(
 
   if (!user) return { success: false, error: 'Tidak terautentikasi' }
 
-  const { data: emp } = await supabase
+  const adminClient = await import('@/lib/supabase/server').then(m => m.createAdminClient())
+  const { data: emp, error: empErr } = await (await adminClient)
     .from('m_employees')
     .select('id, role')
     .eq('user_id', user.id)
     .single()
 
   if (!emp || emp.role !== 'superadmin') {
-    return { success: false, error: 'Akses ditolak: hanya superadmin' }
+    return { success: false, error: `Debug Akses ditolak: UID: ${user.id} - Emp: ${JSON.stringify(emp)} - Err: ${JSON.stringify(empErr)}` }
   }
 
   const now = new Date().toISOString()
@@ -66,7 +67,7 @@ export async function saveSettings(
   ]
 
   for (const entry of entries) {
-    const { error } = await supabase
+    const { error } = await (await adminClient)
       .from('t_settings')
       .upsert(
         { key: entry.key, value: entry.value, updated_by: updatedBy, updated_at: now },

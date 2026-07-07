@@ -101,3 +101,10 @@ REFACTORING_SUMMARY.md
 VERCEL_DEPLOY_FIX_SUMMARY.md
 SOLUSI_ERROR_WEBPACK.md
 INSTALL.md
+
+# SQL data dump files (master data imports)
+public/*.sql
+public/chunk_*.sql
+
+# Temp helper scripts
+/temp_sql_parser/
