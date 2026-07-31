@@ -120,6 +120,43 @@ export async function GET(request: NextRequest) {
   }
 }
 
+function formatVal(val: number | string | null | undefined): string {
+  if (val === null || val === undefined) return '-'
+  const num = typeof val === 'string' ? parseFloat(val) : val
+  if (isNaN(num)) return '-'
+  if (Number.isInteger(num)) return num.toString()
+  return new Intl.NumberFormat('id-ID', { maximumFractionDigits: 4 }).format(num)
+}
+
+function formatPetunjuk(sub: any): string {
+  if (sub.measurement_type === 'quantitative') {
+    const baseIdx = sub.base_index_value || 0
+    const formattedCurrency = new Intl.NumberFormat('id-ID', {
+      style: 'currency',
+      currency: 'IDR',
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 4
+    }).format(baseIdx)
+    return `Tarif Dasar: ${formattedCurrency}`
+  }
+
+  if (sub.scoring_criteria && Array.isArray(sub.scoring_criteria) && sub.scoring_criteria.length > 0) {
+    const items = sub.scoring_criteria.map((c: any) => {
+      const label = c.label || ''
+      if (c.score !== undefined && c.score !== null) {
+        return `[Skor ${formatVal(c.score)}] ${label}`
+      }
+      return label
+    }).filter(Boolean)
+
+    if (items.length > 0) {
+      return items.join('; ')
+    }
+  }
+
+  return '-'
+}
+
 async function generatePDFReport(unit: any, categories: any[], appSettings: any) {
   const { jsPDF } = await import('jspdf')
   const autoTable = (await import('jspdf-autotable')).default
@@ -158,7 +195,10 @@ async function generatePDFReport(unit: any, categories: any[], appSettings: any)
     // Category Header
     doc.setFontSize(12)
     doc.setFont('helvetica', 'bold')
-    doc.text(`Kategori ${cat.category}: ${cat.category_name} (${cat.weight_percentage}%)`, 20, currentY)
+    const catWeightText = cat.is_weighted !== false
+      ? `(${formatVal(cat.weight_percentage)}%)`
+      : `(Tanpa Bobot)`
+    doc.text(`Kategori ${cat.category}: ${cat.category_name} ${catWeightText}`, 20, currentY)
     currentY += 7
 
     const indicators = cat.m_kpi_indicators || []
@@ -167,41 +207,56 @@ async function generatePDFReport(unit: any, categories: any[], appSettings: any)
     const tableBody: any[] = []
     indicators.forEach((ind: any) => {
       grandTotalIndicators++
-      totalWeightInCategory += Number(ind.weight_percentage)
+      totalWeightInCategory += Number(ind.weight_percentage || 0)
+
+      const indWeightText = cat.is_weighted === false
+        ? '-'
+        : ind.calculation_method === 'priority'
+          ? 'Prioritas'
+          : `${formatVal(ind.weight_percentage)}%`
 
       // Main Indicator Row
       tableBody.push([
         { content: ind.code, styles: { fontStyle: 'bold' } },
         { content: ind.name, styles: { fontStyle: 'bold' } },
-        { content: `${ind.weight_percentage}%`, styles: { fontStyle: 'bold' } },
-        { content: ind.target_value || 0, styles: { fontStyle: 'bold' } },
+        { content: indWeightText, styles: { fontStyle: 'bold' } },
+        { content: formatVal(ind.target_value), styles: { fontStyle: 'bold' } },
         { content: ind.measurement_unit || '-', styles: { fontStyle: 'bold' } },
-        { content: ind.base_index_value && ind.base_index_value > 0 ? (ind.base_index_value > 1 ? new Intl.NumberFormat('id-ID').format(ind.base_index_value) : ind.base_index_value.toString()) : '-', styles: { fontStyle: 'bold' } }
+        { content: ind.base_index_value && ind.base_index_value > 0 ? formatVal(ind.base_index_value) : '-', styles: { fontStyle: 'bold' } }
       ])
 
       // Sub Indicators Rows
       const subs = ind.m_kpi_sub_indicators || []
       subs.forEach((sub: any) => {
         grandTotalSubIndicators++
+        const petunjukText = formatPetunjuk(sub)
+        const subWeightText = (cat.is_weighted === false || ind.calculation_method === 'priority')
+          ? '-'
+          : `${formatVal(sub.weight_percentage)}%`
+
+        const subNameWithPetunjuk = petunjukText && petunjukText !== '-'
+          ? `  ${sub.code} - ${sub.name}\n  (Petunjuk: ${petunjukText})`
+          : `  ${sub.name}`
+
         tableBody.push([
           `  ${sub.code}`,
-          `  ${sub.name}`,
-          `${sub.weight_percentage}%`,
-          sub.target_value || 0,
+          subNameWithPetunjuk,
+          subWeightText,
+          formatVal(sub.target_value),
           sub.measurement_unit || '-',
-          sub.base_index_value && sub.base_index_value > 0 ? (sub.base_index_value > 1 ? new Intl.NumberFormat('id-ID').format(sub.base_index_value) : sub.base_index_value.toString()) : '-'
+          sub.base_index_value && sub.base_index_value > 0 ? formatVal(sub.base_index_value) : '-'
         ])
       })
     })
 
     autoTable(doc, {
       startY: currentY,
-      head: [['Kode', 'Indikator / Sub-Indikator', 'Bobot', 'Target', 'Satuan', 'Tarif Dasar']],
+      head: [['Kode', 'Indikator / Sub-Indikator & Petunjuk', 'Bobot', 'Target', 'Satuan', 'Tarif Dasar']],
       body: tableBody,
       foot: [[
         '',
         { content: 'SUBTOTAL BOBOT INDIKATOR', styles: { halign: 'right', fontStyle: 'bold' } },
-        { content: `${totalWeightInCategory}%`, styles: { fontStyle: 'bold' } },
+        { content: cat.is_weighted !== false ? `${formatVal(totalWeightInCategory)}%` : '-', styles: { fontStyle: 'bold' } },
         '',
         '',
         ''
@@ -285,7 +340,7 @@ function generateExcelReport(unit: any, categories: any[], appSettings: any) {
 
     summaryData.push([
       `${cat.category} - ${cat.category_name}`,
-      cat.weight_percentage.toString(),
+      cat.is_weighted !== false ? formatVal(cat.weight_percentage) : 'Tanpa Bobot',
       indicators.length.toString(),
       subIndicatorCount.toString()
     ])
@@ -293,16 +348,18 @@ function generateExcelReport(unit: any, categories: any[], appSettings: any) {
     totalCategories++
     totalIndicators += indicators.length
     totalSubIndicators += subIndicatorCount
-    totalCategoryWeight += Number(cat.weight_percentage)
+    if (cat.is_weighted !== false) {
+      totalCategoryWeight += Number(cat.weight_percentage || 0)
+    }
   })
 
   summaryData.push(
-    ['TOTAL', totalCategoryWeight.toString(), totalIndicators.toString(), totalSubIndicators.toString()]
+    ['TOTAL', `${formatVal(totalCategoryWeight)}%`, totalIndicators.toString(), totalSubIndicators.toString()]
   )
 
   summaryData.push(
     [],
-    ['Validasi Bobot Kategori:', totalCategoryWeight === 100 ? 'VALID ✓' : `TIDAK VALID (${totalCategoryWeight}%)`],
+    ['Validasi Bobot Kategori:', totalCategoryWeight === 100 ? 'VALID ✓' : `TIDAK VALID (${formatVal(totalCategoryWeight)}%)`],
     []
   )
 
@@ -324,7 +381,7 @@ function generateExcelReport(unit: any, categories: any[], appSettings: any) {
   categories.forEach(category => {
     const categoryData = [
       [`KATEGORI ${category.category}: ${category.category_name}`],
-      ['Bobot Kategori:', `${category.weight_percentage}%`],
+      ['Bobot Kategori:', category.is_weighted !== false ? `${formatVal(category.weight_percentage)}%` : 'Tanpa Bobot'],
       ['Deskripsi:', category.description || '-'],
       [],
       ['INDIKATOR DAN SUB INDIKATOR'],
@@ -335,16 +392,24 @@ function generateExcelReport(unit: any, categories: any[], appSettings: any) {
     let totalIndicatorWeight = 0
 
     indicators.forEach((indicator: any) => {
-      totalIndicatorWeight += Number(indicator.weight_percentage)
+      if (category.is_weighted !== false && indicator.calculation_method !== 'priority') {
+        totalIndicatorWeight += Number(indicator.weight_percentage || 0)
+      }
+
+      const indWeightText = category.is_weighted === false
+        ? '-'
+        : indicator.calculation_method === 'priority'
+          ? 'Prioritas'
+          : `Bobot: ${formatVal(indicator.weight_percentage)}%`
 
       categoryData.push([
         'INDIKATOR:',
         indicator.code,
         indicator.name,
-        `Bobot: ${indicator.weight_percentage}%`,
-        `Target: ${indicator.target_value || 0}`,
+        indWeightText,
+        `Target: ${formatVal(indicator.target_value)}`,
         `Satuan: ${indicator.measurement_unit || '-'}`,
-        `Tarif Dasar: ${indicator.base_index_value || '-'}`
+        `Tarif Dasar: ${indicator.base_index_value ? formatVal(indicator.base_index_value) : '-'}`
       ])
 
       if (indicator.description) {
@@ -359,38 +424,38 @@ function generateExcelReport(unit: any, categories: any[], appSettings: any) {
 
         let totalSubWeight = 0
         subIndicators.forEach((sub: any) => {
-          totalSubWeight += Number(sub.weight_percentage)
-
-          // Handle scoring criteria
-          let criteriaText = '-'
-          if (sub.scoring_criteria && Array.isArray(sub.scoring_criteria)) {
-            criteriaText = sub.scoring_criteria.map((criteria: any, index: number) =>
-              `Skor ${index + 1}: ${criteria.min_value || 0}-${criteria.max_value || 100} (${criteria.label || 'N/A'})`
-            ).join('; ')
+          if (category.is_weighted !== false && indicator.calculation_method !== 'priority') {
+            totalSubWeight += Number(sub.weight_percentage || 0)
           }
+
+          const criteriaText = formatPetunjuk(sub)
 
           categoryData.push([
             '',
             sub.code,
             sub.name,
-            sub.weight_percentage,
-            sub.target_value || 0,
+            category.is_weighted === false || indicator.calculation_method === 'priority' ? '-' : formatVal(sub.weight_percentage),
+            formatVal(sub.target_value),
             sub.measurement_unit || '-',
-            sub.base_index_value || '-',
+            sub.base_index_value ? formatVal(sub.base_index_value) : '-',
             criteriaText
           ])
         })
 
-        categoryData.push(['Total Bobot Sub Indikator:', `${totalSubWeight}%`, totalSubWeight === 100 ? 'VALID ✓' : 'PERLU PENYESUAIAN'])
+        if (category.is_weighted !== false && indicator.calculation_method !== 'priority') {
+          categoryData.push(['Total Bobot Sub Indikator:', `${formatVal(totalSubWeight)}%`, totalSubWeight === 100 ? 'VALID ✓' : 'PERLU PENYESUAIAN'])
+        }
         categoryData.push([])
       }
 
       categoryData.push([])
     })
 
-    categoryData.push(['VALIDASI BOBOT INDIKATOR'])
-    categoryData.push(['Total Bobot Indikator:', `${totalIndicatorWeight}%`])
-    categoryData.push(['Status:', totalIndicatorWeight === 100 ? 'VALID ✓' : `PERLU PENYESUAIAN (harus 100%)`])
+    if (category.is_weighted !== false) {
+      categoryData.push(['VALIDASI BOBOT INDIKATOR'])
+      categoryData.push(['Total Bobot Indikator:', `${formatVal(totalIndicatorWeight)}%`])
+      categoryData.push(['Status:', totalIndicatorWeight === 100 ? 'VALID ✓' : `PERLU PENYESUAIAN (harus 100%)`])
+    }
 
     const categorySheet = XLSX.utils.aoa_to_sheet(categoryData)
     XLSX.utils.book_append_sheet(workbook, categorySheet, category.category)

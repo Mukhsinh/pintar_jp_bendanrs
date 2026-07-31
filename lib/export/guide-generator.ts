@@ -107,10 +107,52 @@ export async function generateSystemGuide(unitId?: string): Promise<Buffer> {
 
       let currentY = 70
 
+      const formatVal = (val: number | string | null | undefined): string => {
+        if (val === null || val === undefined) return '-'
+        const num = typeof val === 'string' ? parseFloat(val) : val
+        if (isNaN(num)) return '-'
+        if (Number.isInteger(num)) return num.toString()
+        return new Intl.NumberFormat('id-ID', { maximumFractionDigits: 4 }).format(num)
+      }
+
+      const formatPetunjuk = (sub: any): string => {
+        if (sub.measurement_type === 'quantitative') {
+          const baseIdx = sub.base_index_value || 0
+          const formattedCurrency = new Intl.NumberFormat('id-ID', {
+            style: 'currency',
+            currency: 'IDR',
+            minimumFractionDigits: 0,
+            maximumFractionDigits: 4
+          }).format(baseIdx)
+          return `Tarif Dasar: ${formattedCurrency}`
+        }
+
+        if (sub.scoring_criteria && Array.isArray(sub.scoring_criteria) && sub.scoring_criteria.length > 0) {
+          const items = sub.scoring_criteria.map((c: any) => {
+            const label = c.label || ''
+            if (c.score !== undefined && c.score !== null) {
+              return `[Skor ${formatVal(c.score)}] ${label}`
+            }
+            return label
+          }).filter(Boolean)
+
+          if (items.length > 0) {
+            return items.join('; ')
+          }
+        }
+
+        return ''
+      }
+
       for (const cat of categories || []) {
         doc.setFontSize(11)
         doc.setFont('helvetica', 'bold')
-        doc.text(`KATEGORI ${cat.category}: ${cat.category_name} (Bobot: ${cat.weight_percentage}%)`, 20, currentY)
+
+        const catWeightText = cat.is_weighted !== false
+          ? `(Bobot: ${formatVal(cat.weight_percentage)}%)`
+          : `(Tanpa Bobot)`
+
+        doc.text(`KATEGORI ${cat.category}: ${cat.category_name} ${catWeightText}`, 20, currentY)
         currentY += 7
 
         const { data: indicators } = await adminClient
@@ -122,11 +164,17 @@ export async function generateSystemGuide(unitId?: string): Promise<Buffer> {
 
         const tableBody = []
         for (const ind of indicators || []) {
+          const indWeightText = cat.is_weighted === false
+            ? '-'
+            : ind.calculation_method === 'priority'
+              ? 'Prioritas'
+              : `${formatVal(ind.weight_percentage)}%`
+
           tableBody.push([
             { content: ind.code, styles: { fontStyle: 'bold' } },
             { content: ind.name, styles: { fontStyle: 'bold' } },
-            `${ind.weight_percentage}%`,
-            ind.target_value,
+            indWeightText,
+            formatVal(ind.target_value),
             ind.measurement_unit || '-'
           ])
 
@@ -138,16 +186,20 @@ export async function generateSystemGuide(unitId?: string): Promise<Buffer> {
             .order('code')
 
           for (const sub of subs || []) {
-            let scoringInfo = '-'
-            if (sub.scoring_criteria && Array.isArray(sub.scoring_criteria)) {
-              scoringInfo = sub.scoring_criteria.map((c: any, i: number) => `S${i + 1}: ${c.label || ''}`).join(', ')
-            }
+            const petunjukText = formatPetunjuk(sub)
+            const subWeightText = (cat.is_weighted === false || ind.calculation_method === 'priority')
+              ? '-'
+              : `${formatVal(sub.weight_percentage)}%`
+
+            const subNameWithPetunjuk = petunjukText
+              ? `  ${sub.name}\n  (Petunjuk: ${petunjukText})`
+              : `  ${sub.name}`
 
             tableBody.push([
               `  ${sub.code}`,
-              `  ${sub.name}\n  (Ket: ${scoringInfo})`,
-              `${sub.weight_percentage}%`,
-              sub.target_value,
+              subNameWithPetunjuk,
+              subWeightText,
+              formatVal(sub.target_value),
               sub.measurement_unit || '-'
             ])
           }
